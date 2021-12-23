@@ -45,11 +45,11 @@ $allFilesWithLog4j       = Join-Path -Path "$logFolder" -ChildPath "log4j-all-fo
 if ($rootDir) {
     Write-Output "Scanning all files in directory recursively: $rootDir"
     Write-Output "Gathering all java archives (.jar, .war, .ear) ..."
-    $jarFiles = Get-ChildItem -Path "$rootDir" -File -Recurse -ErrorAction SilentlyContinue | where {$_.extension -in ".jar",".war","ear"} | Select-Object -ExpandProperty FullName
+    $jarFiles = Get-ChildItem -Path "$rootDir" -File -Recurse -ErrorAction SilentlyContinue | where {$_.extension -in ".jar",".war",".ear"} | Select-Object -ExpandProperty FullName
 } else {
     Write-Output "Scanning all local drives"
     Write-Output "Gathering all java archives (.jar, .war, .ear) ..."
-    $jarFiles = Get-PSDrive | Where-Object { $_.Name.length -eq 1 } | Select-Object -ExpandProperty Root | Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue | where {$_.extension -in ".jar",".war","ear"} | Select-Object -ExpandProperty FullName
+    $jarFiles = Get-PSDrive | Where-Object { $_.Name.length -eq 1 } | Select-Object -ExpandProperty Root | Get-ChildItem -File -Recurse -ErrorAction SilentlyContinue | where {$_.extension -in ".jar",".war",".ear"} | Select-Object -ExpandProperty FullName
 }
 
 
