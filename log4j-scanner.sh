@@ -2,14 +2,15 @@
 
 #
 # Bash script to scan a directory or all local file systems for log4j.
-# Requires packages bash (v3), unzip and zip
+# Requires packages bash (v3), unzip
 #
 
 
 # When passed no argument, scans all local filesystems, otherwise only the given path is scanned
 scanDir=$1
 
-if [[ "$scanDir" =~ ^-h|^--h ]]; then
+if [[ "$scanDir" =~ ^-h|^--h ]]
+then
   echo "Scan local file system or directory tree for log4j"
   echo ""
   echo "USAGE: log4j-scanner.sh [directory]"
@@ -19,83 +20,114 @@ if [[ "$scanDir" =~ ^-h|^--h ]]; then
 fi
 
 searchClass="org/apache/logging/log4j/core/lookup/JndiLookup.class"
-tempDir=/tmp/log4j-scan
-outFile=/tmp/CVE-2021-44228.log
-found=0
+tempDir=$(mktemp -d /tmp/log4j-scan.XXXX)
+outFile=$(mktemp /tmp/CVE-2021-44228.XXXX)
+vulnerabilities_found=0
+ansi_yellow='\033[1;33m'
+ansi_green='\033[0;32m'
+ansi_nocolor='\033[0m'
+analysed_files=0
 
 rm "${outFile}" >/dev/null 2>&1
 
+# Check for requirements
+if ! command -v unzip &> /dev/null
+then
+  echo "ERROR: this script requires unzip to be installed on your system."
+  echo "Please install unzip and try again."
+  exit 2
+fi
+
+# Detects if the class exist inside a jar, ear or war file.
 function findClass {
   local jarFile=$1
   local prefix=$2
+  analysed_files=$((analysed_files+1))
+  if /usr/bin/unzip -l "${jarFile}" | grep -q "${searchClass}"
+  then
 
-  if [ $( zip -sf "${jarFile}" | grep ".*${searchClass}" ) ]; then
-
-    if [[ ! -z "$prefix" ]]; then
-#      echo "Tempdir: $tempDir __JarFile: $jarFile ___base: $(basename $prefix)"
-      filename=${jarFile#"$tempDir/$(basename $prefix)"}
+    if [ -n "$prefix" ]
+    then
+      filename="${jarFile#"$tempDir/$(basename "$prefix")"}"
       prefix="${prefix}->"
     else
       filename="${jarFile}"
     fi
-    echo "${prefix}${filename}" | tee -a "${outFile}";
-    found=1
-  fi;
+    echo "${prefix}${filename}" >> "${outFile}"
+    vulnerabilities_found=1
+  fi
 }
 
+# Check if there are nested jars, wars or ears
 function searchNestedJars {
   local jarFile=$1
-  local dir="${tempDir}/$(basename $jarFile)/"
+  local dir
+  local nested_files
+  dir="${tempDir}/$(basename "${jarFile}")/"
 
-  unzip -qq -o -d "${dir}" "${jarFile}" '*.jar' '*.war' '*.ear' >/dev/null 2>&1
+  unzip -qq -o -d "$dir" "$jarFile" '*.jar' '*.war' '*.ear' >/dev/null 2>&1
 
-  find "${dir}" -iname "*.[ejw]ar" | while read nestedFile; do
-    findClass $nestedFile $jarFile
-  done
+  nested_files=$(find "$dir" -type f -iname "*.[ejw]ar")
+  if [ "$nested_files" != '' ]; then
+    while IFS= read -r file
+    do
+      findClass "$file" "$jarFile"
 
-  if [ $( zip -sf "${jarFile}" | grep -q -P '\.(e|j|w)ar$' ) ]; then
-    searchNestedJars $jarFile $jarFile
-  fi;
+      if /usr/bin/unzip -l "$file" | tail  -n +2 | grep -q -i '\.jar\|\.war\|\.ear'
+      then
+        searchNestedJars "$file"
+      fi
+    done < <(printf '%s\n' "$nested_files")
+  fi
 
 }
 
-mkdir -p "${tempDir}"
-
-if [ -z "$scanDir" ]; then
-  echo "Scanning all local file systems"
-
-  for fs in $(mount | awk '/ext|overlay|xfs/ {print $3}'); do
-    echo $fs:;
-    find $fs/ -xdev -type f -iname "*.[ejw]ar" | while read line; do
-      findClass $line
-
-        if [ $( zip -sf "${line}" | grep -q -P '\.(e|j|w)ar$' | wc -l) ]; then
-          searchNestedJars $line $line
-        fi;
-     done;
-  done
-
+if [ -z "$scanDir" ]
+then
+  # Get a list of all file systems
+  file_systems=$(df -l -P | tail -n +2 | awk '{print $6}' | tr '\n' ' ')
 else
-  echo "Scanning directory: ${scanDir}"
-  
-  find "${scanDir}" -type f -iname "*.[ejw]ar" | while read line; do
-    findClass $line
-    if [ $( zip -sf "${line}" | grep -q -P '\.(e|j|w)ar$' | wc -l) ]; then
-      searchNestedJars $line $line
-    fi;
-  done;
+  # Look only for the folder passed as a parameter
+  file_systems=$scanDir
 fi
 
-echo "----------------------------------------------------------"
-echo "Do not forget to clean up temporary files at: $tempDir !"
-echo "e.g.  rm -rf '$tempDir'"
-echo "----------------------------------------------------------"
-echo ""
+printf "%bINFO: Searching for jar, war or ear files on %s%b\n" "${ansi_green}" "$file_systems" "${ansi_nocolor}"
 
-if [ $found ]; then
-  echo "WARNING: Found log4j 2, see: less $outFile"
+
+# Find all jar, ear or war on the system
+jars_found=$(find $file_systems -xdev -type f -iname "*.[ejw]ar" 2> /dev/null)
+
+if [ "$jars_found" != '' ]
+then
+  # Iterate over the files found
+  while IFS= read -r jar_fullpath
+  do
+
+    findClass "$jar_fullpath"
+
+    if /usr/bin/unzip -l "$jar_fullpath" | tail  -n +2 | grep -q -i '\.jar\|\.war\|\.ear'
+    then
+      searchNestedJars "$jar_fullpath"
+    fi
+
+  done < <(printf '%s\n' "$jars_found")
+
 else
-  echo "log4j 2 not found."
+  printf "%bINFO: No jar, ear or war files found on this machine.%b\n" "${ansi_green}" "${ansi_nocolor}"
 fi
 
-exit $found
+printf "%bINFO: %s files analyzed%b\n" "${ansi_green}" "$analysed_files" "${ansi_nocolor}"
+
+if [ "$vulnerabilities_found" == "1" ]
+then
+  printf "%b\nWARNING: Found files containing %s%b\n\n" "${ansi_yellow}" "$searchClass" "${ansi_nocolor}"
+  printf "Vulnerable files: \n\n"
+  cat "$outFile"
+else
+  printf "%bINFO: No files containing %s found%b\n" "${ansi_green}" "$searchClass" "${ansi_nocolor}"
+fi
+
+rm -f "$outFile"
+rm -rf "$tempDir"
+
+exit $vulnerabilities_found
